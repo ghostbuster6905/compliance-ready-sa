@@ -306,8 +306,8 @@ export default function Home() {
           <nav className="space-y-1 p-4">
             <NavItem label="Dashboard" icon="⌂" active />
             <NavItem label="Company Documents" icon="▣" href="/documents" />
-            <NavItem label="Workers" icon="◉" />
-            <NavItem label="Projects" icon="▤" />
+            <NavItem label="Workers" icon="◉" href="/workers" />
+            <NavItem label="Projects" icon="▤" href="/projects" />
             <NavItem label="Compliance Packs" icon="▧" />
             <NavItem label="Notifications" icon="♢" />
           </nav>

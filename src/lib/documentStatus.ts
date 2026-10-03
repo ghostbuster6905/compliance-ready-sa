@@ -26,6 +26,14 @@ export function todayISODate(now: Date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
+/** Whole days from today until the expiry date; negative once expired. */
+export function daysUntilExpiry(
+  expiryDate: string,
+  today: string = todayISODate()
+): number {
+  return toDayNumber(expiryDate) - toDayNumber(today)
+}
+
 /**
  * Derives a document's status from its expiry date (YYYY-MM-DD):
  * - no expiry date → valid

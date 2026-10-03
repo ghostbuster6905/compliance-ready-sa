@@ -3,13 +3,14 @@ import { supabase } from '@/lib/supabase'
 /** Private Supabase Storage bucket for company compliance documents. */
 export const DOCUMENTS_BUCKET = 'company-documents'
 
+/** Private Supabase Storage bucket for worker compliance documents. */
+export const WORKER_DOCUMENTS_BUCKET = 'worker-documents'
+
 export const MAX_DOCUMENT_FILE_BYTES = 10 * 1024 * 1024
 
 /** Value for the file input's accept attribute. A hint only; see validateDocumentFile. */
 export const DOCUMENT_FILE_ACCEPT =
   '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png'
-
-type FileKind = 'pdf' | 'jpg' | 'png'
 
 const extensionKinds: Record<string, FileKind> = {
   pdf: 'pdf',
@@ -30,6 +31,16 @@ const FILE_PATH_PATTERN = new RegExp(
   `^(${UUID})/(${UUID})/${UUID}\\.(pdf|jpg|png)$`,
   'i'
 )
+const WORKER_FILE_PATH_PATTERN = new RegExp(
+  `^(${UUID})/(${UUID})/(${UUID})/${UUID}\\.(pdf|jpg|png)$`,
+  'i'
+)
+
+export type FileKind = 'pdf' | 'jpg' | 'png'
+
+export function isUuid(value: string) {
+  return UUID_PATTERN.test(value)
+}
 
 export type ValidatedFile =
   | { ok: true; kind: FileKind; contentType: string }
@@ -120,12 +131,51 @@ export function isCompanyDocumentFilePath(
 }
 
 /**
+ * Builds {company_id}/{worker_id}/{document_id}/{random-uuid}.{ext} for the
+ * worker-documents bucket. The original file name is never part of the path.
+ */
+export function buildWorkerDocumentFilePath(
+  companyId: string,
+  workerId: string,
+  documentId: string,
+  kind: FileKind
+) {
+  if (![companyId, workerId, documentId].every((id) => UUID_PATTERN.test(id))) {
+    throw new Error('Invalid worker document file path.')
+  }
+  return `${companyId}/${workerId}/${documentId}/${crypto.randomUUID()}.${kind}`
+}
+
+/**
+ * True only for paths built by buildWorkerDocumentFilePath inside this
+ * company's and worker's folder (and this document's, when given).
+ */
+export function isWorkerDocumentFilePath(
+  path: string,
+  companyId: string,
+  workerId: string,
+  documentId?: string
+) {
+  const match = WORKER_FILE_PATH_PATTERN.exec(path)
+  if (!match) return false
+  if (match[1].toLowerCase() !== companyId.toLowerCase()) return false
+  if (match[2].toLowerCase() !== workerId.toLowerCase()) return false
+  if (documentId && match[3].toLowerCase() !== documentId.toLowerCase()) {
+    return false
+  }
+  return true
+}
+
+/**
  * Removes a stored file and confirms it is gone. Storage returns an empty
  * result rather than an error when nothing was deleted (for example when a
  * policy blocks the delete), so an empty result is double-checked.
  */
-export async function removeDocumentFile(path: string): Promise<boolean> {
-  const bucket = supabase.storage.from(DOCUMENTS_BUCKET)
+export async function removeDocumentFile(
+  path: string,
+  bucketName: string = DOCUMENTS_BUCKET
+): Promise<boolean> {
+  const bucket = supabase.storage.from(bucketName)
 
   const { data, error } = await bucket.remove([path])
   if (error) return false
@@ -145,10 +195,11 @@ export async function removeDocumentFile(path: string): Promise<boolean> {
  */
 export async function createDocumentFileUrl(
   path: string,
-  downloadFileName?: string
+  downloadFileName?: string,
+  bucketName: string = DOCUMENTS_BUCKET
 ): Promise<string | null> {
   const { data, error } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
+    .from(bucketName)
     .createSignedUrl(path, 60, {
       download: downloadFileName ?? false,
     })
