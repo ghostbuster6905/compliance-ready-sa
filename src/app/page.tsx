@@ -308,7 +308,7 @@ export default function Home() {
             <NavItem label="Company Documents" icon="▣" href="/documents" />
             <NavItem label="Workers" icon="◉" href="/workers" />
             <NavItem label="Projects" icon="▤" href="/projects" />
-            <NavItem label="Compliance Packs" icon="▧" />
+            <NavItem label="Compliance Packs" icon="▧" href="/compliance-packs" />
             <NavItem label="Notifications" icon="♢" />
           </nav>
 

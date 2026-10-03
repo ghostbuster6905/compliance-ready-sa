@@ -6,6 +6,9 @@ export const DOCUMENTS_BUCKET = 'company-documents'
 /** Private Supabase Storage bucket for worker compliance documents. */
 export const WORKER_DOCUMENTS_BUCKET = 'worker-documents'
 
+/** Private Supabase Storage bucket for generated compliance pack ZIPs. */
+export const COMPLIANCE_PACKS_BUCKET = 'compliance-packs'
+
 export const MAX_DOCUMENT_FILE_BYTES = 10 * 1024 * 1024
 
 /** Value for the file input's accept attribute. A hint only; see validateDocumentFile. */
@@ -33,6 +36,10 @@ const FILE_PATH_PATTERN = new RegExp(
 )
 const WORKER_FILE_PATH_PATTERN = new RegExp(
   `^(${UUID})/(${UUID})/(${UUID})/${UUID}\\.(pdf|jpg|png)$`,
+  'i'
+)
+const PACK_FILE_PATH_PATTERN = new RegExp(
+  `^(${UUID})/(${UUID})/(${UUID})/${UUID}\\.zip$`,
   'i'
 )
 
@@ -164,6 +171,30 @@ export function isWorkerDocumentFilePath(
     return false
   }
   return true
+}
+
+/** Builds {company_id}/{project_id}/{pack_id}/{random-uuid}.zip. */
+export function buildPackFilePath(companyId: string, projectId: string, packId: string) {
+  if (![companyId, projectId, packId].every((id) => UUID_PATTERN.test(id))) {
+    throw new Error('Invalid compliance pack file path.')
+  }
+  return `${companyId}/${projectId}/${packId}/${crypto.randomUUID()}.zip`
+}
+
+/** True only for pack paths in this company's folder for this project and pack. */
+export function isPackFilePath(
+  path: string,
+  companyId: string,
+  projectId: string,
+  packId: string
+) {
+  const match = PACK_FILE_PATH_PATTERN.exec(path)
+  if (!match) return false
+  return (
+    match[1].toLowerCase() === companyId.toLowerCase() &&
+    match[2].toLowerCase() === projectId.toLowerCase() &&
+    match[3].toLowerCase() === packId.toLowerCase()
+  )
 }
 
 /**

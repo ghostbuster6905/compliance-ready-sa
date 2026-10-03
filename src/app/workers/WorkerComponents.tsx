@@ -173,12 +173,14 @@ export function Modal({
   titleId,
   onClose,
   dismissable,
+  size = 'md',
   children,
 }: {
   title: string
   titleId: string
   onClose: () => void
   dismissable: boolean
+  size?: 'md' | 'xl'
   children: ReactNode
 }) {
   useEffect(() => {
@@ -200,7 +202,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl"
+        className={`max-h-full w-full ${size === 'xl' ? 'max-w-3xl' : 'max-w-lg'} overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl`}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           <h2 id={titleId} className="font-semibold">

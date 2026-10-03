@@ -28,6 +28,7 @@ import {
 } from '../ProjectComponents'
 import { AssignedWorkersSection } from '../AssignedWorkersSection'
 import { ProjectComplianceSection } from '../ProjectComplianceSection'
+import { GeneratePackModal } from '@/app/compliance-packs/PackComponents'
 
 type ProjectState =
   | { status: 'loading' }
@@ -47,6 +48,7 @@ export default function ProjectProfilePage() {
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [assignmentVersion, setAssignmentVersion] = useState(0)
+  const [generatingPack, setGeneratingPack] = useState(false)
   const [feedback, setFeedback] = useFeedback()
 
   useEffect(() => {
@@ -191,7 +193,13 @@ export default function ProjectProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setGeneratingPack(true)}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+                    >
+                      Generate Compliance Pack
+                    </button>
                     <button
                       onClick={() => setEditing(true)}
                       className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
@@ -251,6 +259,17 @@ export default function ProjectProfilePage() {
             setFeedback({ tone: 'success', message: 'Project details updated.' })
           }}
           onClose={() => setEditing(false)}
+        />
+      )}
+
+      {generatingPack && project && auth.status === 'ready' && (
+        <GeneratePackModal
+          companyId={auth.profile.company_id}
+          userId={auth.profile.id}
+          userName={auth.profile.full_name}
+          project={project}
+          onGenerated={() => {}}
+          onClose={() => setGeneratingPack(false)}
         />
       )}
 
