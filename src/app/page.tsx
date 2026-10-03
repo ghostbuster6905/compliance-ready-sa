@@ -1,3 +1,55 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+
+type Profile = {
+  id: string;
+  company_id: string;
+  full_name: string;
+  role: string;
+};
+
+type Company = {
+  id: string;
+  name: string;
+  subscription_plan: string | null;
+};
+
+type AuthState =
+  | { status: "loading" }
+  | { status: "error"; title: string; message: string; canSignOut: boolean }
+  | { status: "ready"; profile: Profile; company: Company };
+
+const roleLabels: Record<string, string> = {
+  owner: "Owner",
+  compliance_manager: "Compliance Manager",
+  site_supervisor: "Site Supervisor",
+};
+
+function formatRole(role: string) {
+  return (
+    roleLabels[role] ??
+    role
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+  );
+}
+
+function getInitials(name: string) {
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word.charAt(0).toUpperCase())
+      .join("") || "?"
+  );
+}
+
 const stats = [
   {
     title: "Compliance Score",
@@ -71,6 +123,172 @@ const projects = [
 ];
 
 export default function Home() {
+  const router = useRouter();
+  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+      if (cancelled) return;
+
+      if (sessionError) {
+        setAuth({
+          status: "error",
+          title: "We couldn't verify your session",
+          message: "Please refresh the page or sign in again.",
+          canSignOut: false,
+        });
+        return;
+      }
+
+      if (!sessionData.session) {
+        router.replace("/login");
+        return;
+      }
+
+      // getSession only reads local storage; getUser confirms the session
+      // with Supabase Auth so a revoked or expired session is rejected.
+      const { data: userData, error: userError } =
+        await supabase.auth.getUser();
+      if (cancelled) return;
+
+      if (userError || !userData.user) {
+        const status = userError?.status ?? 401;
+        if (status >= 400 && status < 500) {
+          router.replace("/login");
+          return;
+        }
+        setAuth({
+          status: "error",
+          title: "We couldn't verify your session",
+          message: "Please check your connection and refresh the page.",
+          canSignOut: false,
+        });
+        return;
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, company_id, full_name, role")
+        .eq("id", userData.user.id)
+        .maybeSingle<Profile>();
+      if (cancelled) return;
+
+      if (profileError) {
+        setAuth({
+          status: "error",
+          title: "We couldn't load your profile",
+          message: "Please refresh the page or try again shortly.",
+          canSignOut: true,
+        });
+        return;
+      }
+
+      if (!profile) {
+        setAuth({
+          status: "error",
+          title: "Account setup incomplete",
+          message:
+            "Your account isn't linked to a company yet. Sign out and sign in again to finish setting up your company, or contact support if this continues.",
+          canSignOut: true,
+        });
+        return;
+      }
+
+      const { data: company, error: companyError } = await supabase
+        .from("companies")
+        .select("id, name, subscription_plan")
+        .eq("id", profile.company_id)
+        .maybeSingle<Company>();
+      if (cancelled) return;
+
+      if (companyError || !company) {
+        setAuth({
+          status: "error",
+          title: "We couldn't load your company",
+          message: "Please refresh the page or try again shortly.",
+          canSignOut: true,
+        });
+        return;
+      }
+
+      setAuth({ status: "ready", profile, company });
+    }
+
+    load();
+
+    // Leave the dashboard if the session ends elsewhere (e.g. another tab).
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") router.replace("/login");
+    });
+
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
+  }, [router]);
+
+  async function handleSignOut() {
+    setSignOutError(null);
+    setSigningOut(true);
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setSigningOut(false);
+      setSignOutError("We couldn't sign you out. Please try again.");
+      return;
+    }
+
+    router.replace("/login");
+  }
+
+  if (auth.status === "loading") {
+    return (
+      <AuthScreen>
+        <span
+          aria-hidden="true"
+          className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600"
+        />
+        <p className="mt-4 text-sm text-slate-500">Loading your dashboard…</p>
+      </AuthScreen>
+    );
+  }
+
+  if (auth.status === "error") {
+    return (
+      <AuthScreen>
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm sm:p-8">
+          <h1 className="text-xl font-semibold">{auth.title}</h1>
+          <p className="mt-2 text-sm text-slate-500">{auth.message}</p>
+
+          {signOutError && (
+            <p role="alert" className="mt-4 text-sm text-red-600">
+              {signOutError}
+            </p>
+          )}
+
+          {auth.canSignOut && (
+            <button
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="mt-6 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {signingOut ? "Signing out…" : "Sign out"}
+            </button>
+          )}
+        </div>
+      </AuthScreen>
+    );
+  }
+
+  const { profile, company } = auth;
+
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <div className="flex min-h-screen">
@@ -87,7 +305,7 @@ export default function Home() {
 
           <nav className="space-y-1 p-4">
             <NavItem label="Dashboard" icon="⌂" active />
-            <NavItem label="Company Documents" icon="▣" />
+            <NavItem label="Company Documents" icon="▣" href="/documents" />
             <NavItem label="Workers" icon="◉" />
             <NavItem label="Projects" icon="▤" />
             <NavItem label="Compliance Packs" icon="▧" />
@@ -118,16 +336,35 @@ export default function Home() {
 
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-semibold text-white">
-                  GC
+                  {getInitials(company.name)}
                 </div>
 
                 <div className="hidden sm:block">
-                  <div className="text-sm font-medium">GHOST Construction</div>
-                  <div className="text-xs text-slate-500">Owner</div>
+                  <div className="text-sm font-medium">{company.name}</div>
+                  <div className="text-xs text-slate-500">
+                    {profile.full_name} · {formatRole(profile.role)}
+                  </div>
                 </div>
               </div>
+
+              <button
+                onClick={handleSignOut}
+                disabled={signingOut}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {signingOut ? "Signing out…" : "Sign out"}
+              </button>
             </div>
           </header>
+
+          {signOutError && (
+            <div
+              role="alert"
+              className="border-b border-red-200 bg-red-50 px-6 py-3 text-sm text-red-700 lg:px-8"
+            >
+              {signOutError}
+            </div>
+          )}
 
           <div className="space-y-8 p-6 lg:p-8">
             {/* Welcome */}
@@ -307,27 +544,54 @@ export default function Home() {
   );
 }
 
+function AuthScreen({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-12 text-slate-900">
+      <div className="mb-8 text-center">
+        <div className="text-2xl font-bold tracking-tight">
+          Compliance<span className="text-blue-600">Ready</span>
+        </div>
+        <div className="text-xs tracking-widest text-slate-400">
+          SOUTH AFRICA
+        </div>
+      </div>
+      {children}
+    </main>
+  );
+}
+
 function NavItem({
   label,
   icon,
   active = false,
+  href,
 }: {
   label: string;
   icon: string;
   active?: boolean;
+  href?: string;
 }) {
-  return (
-    <button
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-        active
-          ? "bg-blue-50 text-blue-700"
-          : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-      }`}
-    >
+  const className = `flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
+    active
+      ? "bg-blue-50 text-blue-700"
+      : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+  }`;
+  const content = (
+    <>
       <span className="w-5 text-center">{icon}</span>
       {label}
-    </button>
+    </>
   );
+
+  if (href) {
+    return (
+      <Link href={href} className={className}>
+        {content}
+      </Link>
+    );
+  }
+
+  return <button className={className}>{content}</button>;
 }
 
 function QuickAction({
