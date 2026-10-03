@@ -4,6 +4,21 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import type { DocumentHealth, ReadinessLabel } from "@/lib/readiness";
+import {
+  buildDocumentAlerts,
+  companyDocumentStats,
+  formatAlertDate,
+  loadCompanyDocuments,
+  loadProjectsForReadiness,
+  loadWorkersWithDocuments,
+  overallReadiness,
+  projectReadiness,
+  workerStats,
+  type DocumentAlert,
+  type ProjectReadinessSummary,
+} from "@/lib/companyOverview";
+import { actionNeededCount, loadStoredNotifications } from "@/lib/notifications";
 
 type Profile = {
   id: string;
@@ -50,83 +65,85 @@ function getInitials(name: string) {
   );
 }
 
-const stats = [
-  {
-    title: "Compliance Score",
-    value: "92%",
-    description: "Overall company readiness",
-    icon: "✓",
-  },
-  {
-    title: "Company Documents",
-    value: "18",
-    description: "16 valid · 2 expiring",
-    icon: "▣",
-  },
-  {
-    title: "Workers",
-    value: "24",
-    description: "21 compliant · 3 attention",
-    icon: "◉",
-  },
-  {
-    title: "Active Projects",
-    value: "6",
-    description: "2 require attention",
-    icon: "⌂",
-  },
-];
+type Overview =
+  | { status: "loading" }
+  | { status: "error" }
+  | {
+      status: "ready";
+      companyHealth: DocumentHealth;
+      workers: ReturnType<typeof workerStats>;
+      activeProjects: ProjectReadinessSummary[];
+      overall: ReturnType<typeof overallReadiness>;
+      alerts: DocumentAlert[];
+      actionCount: number;
+    };
 
-const expiringDocuments = [
-  {
-    document: "Public Liability Insurance",
-    category: "Company",
-    expiry: "12 Oct 2026",
-    days: "9 days",
-    status: "Expiring soon",
-  },
-  {
-    document: "Medical Fitness Certificate",
-    category: "Worker",
-    expiry: "18 Oct 2026",
-    days: "15 days",
-    status: "Expiring soon",
-  },
-  {
-    document: "Working at Heights Certificate",
-    category: "Worker",
-    expiry: "27 Oct 2026",
-    days: "24 days",
-    status: "Expiring soon",
-  },
-];
+const readinessBadgeClasses: Record<ReadinessLabel, string> = {
+  "Strong readiness": "bg-emerald-50 text-emerald-700",
+  "Needs attention": "bg-amber-50 text-amber-700",
+  "Action required": "bg-red-50 text-red-700",
+};
 
-const projects = [
-  {
-    name: "Sandton Office Development",
-    client: "ABC Construction",
-    progress: 96,
-    status: "Ready",
-  },
-  {
-    name: "Midrand Warehouse",
-    client: "BuildPro Projects",
-    progress: 82,
-    status: "Attention",
-  },
-  {
-    name: "Fourways Retail Centre",
-    client: "Urban Developments",
-    progress: 74,
-    status: "Attention",
-  },
-];
+const DASHBOARD_ALERT_LIMIT = 5;
+const DASHBOARD_PROJECT_LIMIT = 5;
 
 export default function Home() {
   const router = useRouter();
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [overview, setOverview] = useState<Overview>({ status: "loading" });
+  const [overviewReloadKey, setOverviewReloadKey] = useState(0);
+
+  const companyId = auth.status === "ready" ? auth.profile.company_id : null;
+  const userId = auth.status === "ready" ? auth.profile.id : null;
+
+  useEffect(() => {
+    if (!companyId || !userId) return;
+    let cancelled = false;
+
+    async function loadOverview() {
+      // A handful of company-scoped queries in parallel; no per-row queries.
+      const [companyDocuments, workers, projects, notifications] =
+        await Promise.all([
+          loadCompanyDocuments(companyId!),
+          loadWorkersWithDocuments(companyId!),
+          loadProjectsForReadiness(companyId!),
+          loadStoredNotifications(companyId!, userId!),
+        ]);
+      if (cancelled) return;
+
+      if (!companyDocuments || !workers || !projects) {
+        setOverview({ status: "error" });
+        return;
+      }
+
+      const companyHealth = companyDocumentStats(companyDocuments);
+      const workersById = new Map(workers.map((w) => [w.id, w]));
+      const activeProjects = projects
+        .filter((p) => p.status === "active")
+        .map((p) => projectReadiness(p, workersById, companyHealth));
+      const alerts = buildDocumentAlerts(companyDocuments, workers);
+
+      setOverview({
+        status: "ready",
+        companyHealth,
+        workers: workerStats(workers),
+        activeProjects,
+        overall: overallReadiness(activeProjects),
+        alerts,
+        // Stored notifications are optional here; if they fail to load the
+        // bell still reflects the live document alerts.
+        actionCount: actionNeededCount(alerts, notifications ?? []),
+      });
+    }
+
+    loadOverview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, userId, overviewReloadKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -309,7 +326,7 @@ export default function Home() {
             <NavItem label="Workers" icon="◉" href="/workers" />
             <NavItem label="Projects" icon="▤" href="/projects" />
             <NavItem label="Compliance Packs" icon="▧" href="/compliance-packs" />
-            <NavItem label="Notifications" icon="♢" />
+            <NavItem label="Notifications" icon="♢" href="/notifications" />
           </nav>
 
           <div className="absolute bottom-0 w-64 border-t border-slate-200 p-4">
@@ -330,9 +347,22 @@ export default function Home() {
             </div>
 
             <div className="flex items-center gap-4">
-              <button className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50">
+              <Link
+                href="/notifications"
+                aria-label={
+                  overview.status === "ready" && overview.actionCount > 0
+                    ? `Notifications: ${overview.actionCount} need attention`
+                    : "Notifications"
+                }
+                className="relative rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50"
+              >
                 ♢
-              </button>
+                {overview.status === "ready" && overview.actionCount > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+                    {overview.actionCount > 99 ? "99+" : overview.actionCount}
+                  </span>
+                )}
+              </Link>
 
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 font-semibold text-white">
@@ -377,31 +407,35 @@ export default function Home() {
               </p>
             </div>
 
+            {overview.status === "error" && (
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+              >
+                <span>We couldn&apos;t load your dashboard data.</span>
+                <button
+                  onClick={() => {
+                    setOverview({ status: "loading" });
+                    setOverviewReloadKey((key) => key + 1);
+                  }}
+                  className="font-medium hover:underline"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+
             {/* Stats */}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {stats.map((stat) => (
-                <div
-                  key={stat.title}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-slate-500">
-                      {stat.title}
-                    </span>
-
-                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-                      {stat.icon}
-                    </span>
-                  </div>
-
-                  <div className="mt-4 text-3xl font-bold">{stat.value}</div>
-
-                  <p className="mt-1 text-sm text-slate-500">
-                    {stat.description}
-                  </p>
-                </div>
+              {buildStats(overview).map((stat) => (
+                <StatCard key={stat.title} stat={stat} />
               ))}
             </div>
+            <p className="-mt-4 text-xs text-slate-500">
+              Overall Readiness reflects the project checklists and document
+              records configured in ComplianceReady SA. It is not a legal
+              compliance certification.
+            </p>
 
             {/* Main Grid */}
             <div className="grid gap-6 xl:grid-cols-2">
@@ -411,42 +445,80 @@ export default function Home() {
                   <div>
                     <h3 className="font-semibold">Documents needing attention</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Documents approaching their expiry date.
+                      Expired documents and documents expiring within 30 days.
                     </p>
                   </div>
 
-                  <button className="text-sm font-medium text-blue-600 hover:text-blue-700">
+                  <Link
+                    href="/notifications"
+                    className="text-sm font-medium text-blue-600 hover:text-blue-700"
+                  >
                     View all
-                  </button>
+                  </Link>
                 </div>
 
-                <div className="divide-y divide-slate-100">
-                  {expiringDocuments.map((document) => (
-                    <div
-                      key={document.document}
-                      className="flex items-center justify-between gap-4 p-5"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
-                          !
+                {overview.status !== "ready" ? (
+                  <PanelMessage
+                    text={
+                      overview.status === "loading"
+                        ? "Loading documents…"
+                        : "Document alerts are unavailable."
+                    }
+                  />
+                ) : overview.alerts.length === 0 ? (
+                  <PanelMessage text="No expired or expiring documents. Documents expiring within 30 days will appear here." />
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {overview.alerts.slice(0, DASHBOARD_ALERT_LIMIT).map((alert) => (
+                      <Link
+                        key={alert.id}
+                        href={alert.workerId ? `/workers/${alert.workerId}` : "/documents"}
+                        className="flex items-center justify-between gap-4 p-5 hover:bg-slate-50"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div
+                            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                              alert.status === "expired"
+                                ? "bg-red-50 text-red-600"
+                                : "bg-amber-50 text-amber-600"
+                            }`}
+                          >
+                            !
+                          </div>
+
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">
+                              {alert.documentType}
+                            </div>
+                            <div className="truncate text-xs text-slate-500">
+                              {alert.subjectName} ·{" "}
+                              {alert.status === "expired" ? "Expired" : "Expires"}{" "}
+                              {formatAlertDate(alert.expiryDate)}
+                            </div>
+                          </div>
                         </div>
 
-                        <div>
-                          <div className="text-sm font-medium">
-                            {document.document}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {document.category} · Expires {document.expiry}
-                          </div>
-                        </div>
-                      </div>
-
-                      <span className="whitespace-nowrap rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
-                        {document.days}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                        <span
+                          className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${
+                            alert.status === "expired"
+                              ? "bg-red-50 text-red-700"
+                              : "bg-amber-50 text-amber-700"
+                          }`}
+                        >
+                          {alertBadgeText(alert)}
+                        </span>
+                      </Link>
+                    ))}
+                    {overview.alerts.length > DASHBOARD_ALERT_LIMIT && (
+                      <Link
+                        href="/notifications"
+                        className="block p-4 text-center text-sm font-medium text-blue-600 hover:bg-slate-50 hover:text-blue-700"
+                      >
+                        +{overview.alerts.length - DASHBOARD_ALERT_LIMIT} more
+                      </Link>
+                    )}
+                  </div>
+                )}
               </section>
 
               {/* Projects */}
@@ -455,59 +527,88 @@ export default function Home() {
                   <div>
                     <h3 className="font-semibold">Project readiness</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Current compliance status by project.
+                      Readiness of your active projects.
                     </p>
                   </div>
 
-                  <button className="text-sm font-medium text-blue-600 hover:text-blue-700">
+                  <Link
+                    href="/projects"
+                    className="text-sm font-medium text-blue-600 hover:text-blue-700"
+                  >
                     View all
-                  </button>
+                  </Link>
                 </div>
 
-                <div className="divide-y divide-slate-100">
-                  {projects.map((project) => (
-                    <div key={project.name} className="p-5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-sm font-medium">
-                            {project.name}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {project.client}
-                          </div>
-                        </div>
-
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-medium ${
-                            project.status === "Ready"
-                              ? "bg-emerald-50 text-emerald-700"
-                              : "bg-amber-50 text-amber-700"
-                          }`}
+                {overview.status !== "ready" ? (
+                  <PanelMessage
+                    text={
+                      overview.status === "loading"
+                        ? "Loading projects…"
+                        : "Project readiness is unavailable."
+                    }
+                  />
+                ) : overview.activeProjects.length === 0 ? (
+                  <PanelMessage text="No active projects. Set a project's status to Active to track its readiness here." />
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {sortByReadiness(overview.activeProjects)
+                      .slice(0, DASHBOARD_PROJECT_LIMIT)
+                      .map((project) => (
+                        <Link
+                          key={project.id}
+                          href={`/projects/${project.id}`}
+                          className="block p-5 hover:bg-slate-50"
                         >
-                          {project.status}
-                        </span>
-                      </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">
+                                {project.name}
+                              </div>
+                              <div className="truncate text-xs text-slate-500">
+                                {project.client || "No client set"}
+                              </div>
+                            </div>
 
-                      <div className="mt-4">
-                        <div className="mb-2 flex justify-between text-xs">
-                          <span className="text-slate-500">
-                            Compliance completion
-                          </span>
-                          <span className="font-medium">
-                            {project.progress}%
-                          </span>
-                        </div>
+                            <span
+                              className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${
+                                project.label
+                                  ? readinessBadgeClasses[project.label]
+                                  : "bg-slate-100 text-slate-600"
+                              }`}
+                            >
+                              {project.label ?? "Not configured"}
+                            </span>
+                          </div>
 
-                        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className="h-full rounded-full bg-blue-600"
-                            style={{ width: `${project.progress}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                          <div className="mt-4">
+                            <div className="mb-2 flex justify-between text-xs">
+                              <span className="text-slate-500">Project readiness</span>
+                              <span className="font-medium">
+                                {project.overall === null
+                                  ? "Not configured"
+                                  : `${project.overall}%`}
+                              </span>
+                            </div>
+
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                              <div
+                                className="h-full rounded-full bg-blue-600"
+                                style={{ width: `${project.overall ?? 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        </Link>
+                      ))}
+                    {overview.activeProjects.length > DASHBOARD_PROJECT_LIMIT && (
+                      <Link
+                        href="/projects"
+                        className="block p-4 text-center text-sm font-medium text-blue-600 hover:bg-slate-50 hover:text-blue-700"
+                      >
+                        +{overview.activeProjects.length - DASHBOARD_PROJECT_LIMIT} more
+                      </Link>
+                    )}
+                  </div>
+                )}
               </section>
             </div>
 
@@ -517,21 +618,25 @@ export default function Home() {
 
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <QuickAction
+                  href="/documents"
                   title="Upload document"
                   description="Add a company compliance document"
                 />
 
                 <QuickAction
+                  href="/workers"
                   title="Add worker"
                   description="Create a new worker profile"
                 />
 
                 <QuickAction
+                  href="/projects"
                   title="Create project"
                   description="Start a new project checklist"
                 />
 
                 <QuickAction
+                  href="/compliance-packs"
                   title="Generate pack"
                   description="Create a project compliance pack"
                 />
@@ -595,14 +700,19 @@ function NavItem({
 }
 
 function QuickAction({
+  href,
   title,
   description,
 }: {
+  href: string;
   title: string;
   description: string;
 }) {
   return (
-    <button className="rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+    <Link
+      href={href}
+      className="rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+    >
       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
         +
       </div>
@@ -610,6 +720,139 @@ function QuickAction({
       <div className="mt-4 font-medium">{title}</div>
 
       <div className="mt-1 text-sm text-slate-500">{description}</div>
-    </button>
+    </Link>
   );
+}
+
+type Stat = {
+  title: string;
+  value: string;
+  description: string;
+  icon: string;
+  href: string;
+  muted?: boolean;
+};
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function buildStats(overview: Overview): Stat[] {
+  if (overview.status !== "ready") {
+    const description = overview.status === "loading" ? "Loading…" : "Unavailable";
+    return [
+      { title: "Overall Readiness", icon: "✓", href: "/projects" },
+      { title: "Company Documents", icon: "▣", href: "/documents" },
+      { title: "Workers", icon: "◉", href: "/workers" },
+      { title: "Active Projects", icon: "⌂", href: "/projects" },
+    ].map((stat) => ({ ...stat, value: "—", description, muted: true }));
+  }
+
+  const { overall, companyHealth, workers, activeProjects } = overview;
+  const projectsNeedingAttention = activeProjects.filter(
+    (p) => p.overall !== null && p.overall < 90
+  ).length;
+  const projectsNotConfigured = activeProjects.filter((p) => p.overall === null).length;
+  const workersNeedingAttention = workers.withExpired + workers.withExpiring;
+
+  return [
+    {
+      title: "Overall Readiness",
+      icon: "✓",
+      href: "/projects",
+      value: overall.score === null ? "Not configured" : `${overall.score}%`,
+      muted: overall.score === null,
+      description:
+        overall.score === null
+          ? activeProjects.length === 0
+            ? "No active projects yet"
+            : "No active project has readiness data yet"
+          : `${overall.label} · average of ${pluralize(overall.scoredCount, "active project")}`,
+    },
+    {
+      title: "Company Documents",
+      icon: "▣",
+      href: "/documents",
+      value: String(companyHealth.total),
+      description:
+        companyHealth.total === 0
+          ? "No documents recorded yet"
+          : `${companyHealth.valid} valid · ${companyHealth.expiring} expiring · ${companyHealth.expired} expired`,
+    },
+    {
+      title: "Workers",
+      icon: "◉",
+      href: "/workers",
+      value: String(workers.active),
+      description:
+        workers.active + workers.inactive === 0
+          ? "No workers added yet"
+          : [
+              "Active",
+              workersNeedingAttention === 0
+                ? "None need attention"
+                : `${workersNeedingAttention} need attention (${workers.withExpired} expired, ${workers.withExpiring} expiring)`,
+              workers.inactive ? `${workers.inactive} inactive` : null,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+    },
+    {
+      title: "Active Projects",
+      icon: "⌂",
+      href: "/projects",
+      value: String(activeProjects.length),
+      description:
+        activeProjects.length === 0
+          ? "No active projects"
+          : [
+              `${projectsNeedingAttention} need attention`,
+              projectsNotConfigured ? `${projectsNotConfigured} not configured` : null,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+    },
+  ];
+}
+
+function StatCard({ stat }: { stat: Stat }) {
+  return (
+    <Link
+      href={stat.href}
+      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-slate-500">{stat.title}</span>
+
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+          {stat.icon}
+        </span>
+      </div>
+
+      <div className={`mt-4 font-bold ${stat.muted ? "text-xl text-slate-400" : "text-3xl"}`}>
+        {stat.value}
+      </div>
+
+      <p className="mt-1 text-sm text-slate-500">{stat.description}</p>
+    </Link>
+  );
+}
+
+function PanelMessage({ text }: { text: string }) {
+  return <p className="p-6 text-sm text-slate-500">{text}</p>;
+}
+
+function alertBadgeText(alert: DocumentAlert) {
+  if (alert.status === "expired") return "Expired";
+  if (alert.days === 0) return "Today";
+  return alert.days === 1 ? "1 day" : `${alert.days} days`;
+}
+
+// Projects needing the most attention first; "Not configured" last.
+function sortByReadiness(projects: ProjectReadinessSummary[]) {
+  return [...projects].sort((a, b) => {
+    if (a.overall === null) return b.overall === null ? 0 : 1;
+    if (b.overall === null) return -1;
+    return a.overall - b.overall;
+  });
 }
